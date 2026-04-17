@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBWyxfgQW1RGzgtqckJ6UshxtpKsSA1vH8",
@@ -12,6 +13,7 @@ const firebaseConfig = {
 };
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
+const storage = getStorage(firebaseApp);
 
 const DEFAULT_STUDENTS = ["Derrick", "Tom", "Mike", "Jordan", "Lael", "Philip", "Sam"];
 const COACH_PIN = "1234";
@@ -29,8 +31,8 @@ const C = {
 };
 
 const fmt = v => (v==null||v==="") ? "—" : `$${Number(v).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-const emptyTrade   = () => ({ entryTime:"", callPut:"", contracts:"", entryPrice:"", exitPrice:"", rulesMet:"", screenshot:"", note:"" });
-const emptyDay     = () => ({ trades:[emptyTrade(),emptyTrade(),emptyTrade()], spread:{type:"",timeIn:"",timeOut:"",strikes:"",creditRecvd:"",maxRisk:"",contracts:"",outcome:"",notes:""}, flatScreenshot:"" });
+const emptyTrade   = () => ({ entryTime:"", callPut:"", contracts:"", entryPrice:"", exitPrice:"", rulesMet:"", screenshotUrl:"", note:"" });
+const emptyDay     = () => ({ trades:[emptyTrade(),emptyTrade(),emptyTrade()], spread:{type:"",timeIn:"",timeOut:"",strikes:"",creditRecvd:"",maxRisk:"",contracts:"",outcome:"",notes:"",screenshotUrl:""}, flatScreenshot:"", flatScreenshotUrl:"" });
 const emptyStudent = () => ({ weeks:[1,2,3].map(w=>({ week:w, days:DAY_NAMES.map(()=>emptyDay()) })) });
 
 const calcGross = t => {
@@ -58,6 +60,14 @@ async function loadStudentData(name){
 }
 async function saveStudentData(name,data){ try{ await setDoc(doc(db,"students",name),{data}); }catch(e){console.error(e);} }
 
+async function uploadScreenshot(file, path){
+  try{
+    const storageRef = ref(storage, path);
+    await uploadBytes(storageRef, file);
+    return await getDownloadURL(storageRef);
+  } catch(e){ console.error(e); return null; }
+}
+
 const TD    = { padding:"6px 8px", verticalAlign:"middle" };
 const TH    = { padding:"8px 8px", fontSize:10, fontWeight:700, color:"#555", letterSpacing:1, textTransform:"uppercase", textAlign:"left", borderBottom:"1px solid #1e1e2e", whiteSpace:"nowrap" };
 const IBASE = { background:"#0d0d1a", border:"1px solid #2a2a3e", borderRadius:6, padding:"6px 8px", color:"#e0e0e0", fontSize:12, fontFamily:"'DM Mono',monospace", outline:"none", width:"100%" };
@@ -80,7 +90,40 @@ function Badge({text,color,bg}){
   return <span style={{display:"inline-block",padding:"2px 10px",borderRadius:20,fontSize:11,fontWeight:700,color:color||"#fff",background:bg||"#ffffff22",letterSpacing:.5,whiteSpace:"nowrap"}}>{text}</span>;
 }
 
-function TradeRow({ trade, idx, onChange, onRemove, canRemove, locked }){
+function PhotoUpload({ url, onUpload, path, locked }){
+  const fileRef = useRef();
+  const [uploading, setUploading] = useState(false);
+  const handleFile = async e => {
+    const file = e.target.files[0];
+    if(!file) return;
+    setUploading(true);
+    const downloadUrl = await uploadScreenshot(file, path);
+    if(downloadUrl) onUpload(downloadUrl);
+    setUploading(false);
+  };
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:6}}>
+      {url ? (
+        <a href={url} target="_blank" rel="noreferrer"
+          style={{display:"flex",alignItems:"center",gap:4,color:C.green,fontSize:11,fontWeight:700,textDecoration:"none"}}>
+          <img src={url} alt="screenshot" style={{width:32,height:32,objectFit:"cover",borderRadius:4,border:`1px solid ${C.green}44`}}/>
+          <span>View</span>
+        </a>
+      ) : null}
+      {!locked && (
+        <>
+          <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}} onChange={handleFile}/>
+          <button onClick={()=>fileRef.current.click()} disabled={uploading}
+            style={{background:url?"#1a1a2e":C.gold+"22",border:`1px solid ${url?"#2a2a3e":C.gold+"66"}`,borderRadius:6,padding:"4px 8px",color:url?"#666":C.gold,fontSize:10,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+            {uploading?"⏳ Uploading...":url?"🔄 Replace":"📷 Add Photo"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TradeRow({ trade, idx, onChange, onRemove, canRemove, locked, studentName, weekNum, dayIdx }){
   const gross=calcGross(trade);
   const isLoss=gross!==null&&gross<0;
   const isWin =gross!==null&&gross>0;
@@ -94,6 +137,7 @@ function TradeRow({ trade, idx, onChange, onRemove, canRemove, locked }){
       {opts.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
     </select>
   );
+  const photoPath = `screenshots/${studentName}/week${weekNum}/day${dayIdx}/trade${idx}_${Date.now()}.jpg`;
   return (
     <tr style={{background:isLoss?"#1a0808":isWin?"#081a08":idx%2===0?"#12121f":"#0f0f1c",borderLeft:`3px solid ${isLoss?C.red:isWin?C.green:"#2a2a3e"}`}}>
       <td style={{...TD,width:32}}>
@@ -114,13 +158,19 @@ function TradeRow({ trade, idx, onChange, onRemove, canRemove, locked }){
         {gross!==null?fmt(gross):"—"}
       </td>
       <td style={TD}>{sel("rulesMet",[{v:"",l:"—"},{v:"YES",l:"✅ Yes"},{v:"PARTIAL",l:"⚠️ Partial"},{v:"NO",l:"❌ No"}])}</td>
-      <td style={TD}>{inp("screenshot","img_001.png")}</td>
+      <td style={TD}>
+        <PhotoUpload
+          url={trade.screenshotUrl}
+          onUpload={url=>onChange({...trade, screenshotUrl:url})}
+          path={photoPath}
+          locked={locked}/>
+      </td>
       <td style={TD}>{inp("note","optional note")}</td>
     </tr>
   );
 }
 
-function DayBlock({ dayIdx, day, onChange, weekConfig, locked }){
+function DayBlock({ dayIdx, day, onChange, weekConfig, locked, studentName, weekNum }){
   const dayNet=calcDayNet(day);
   const losses=countLosses(day);
   const threeLoss=losses>=3;
@@ -151,7 +201,18 @@ function DayBlock({ dayIdx, day, onChange, weekConfig, locked }){
       <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
           <thead><tr style={{background:"#0d0d1a"}}>{["#","ENTRY TIME","CALL/PUT","CONTRACTS","ENTRY $","EXIT $","GROSS P&L","RULES MET?","SCREENSHOT","NOTE"].map(h=><th key={h} style={TH}>{h}</th>)}</tr></thead>
-          <tbody>{day.trades.map((t,i)=><TradeRow key={i} trade={t} idx={i} onChange={nt=>updateTrade(i,nt)} onRemove={()=>removeTrade(i)} canRemove={day.trades.length>1} locked={locked}/>)}</tbody>
+          <tbody>
+            {day.trades.map((t,i)=>(
+              <TradeRow key={i} trade={t} idx={i}
+                onChange={nt=>updateTrade(i,nt)}
+                onRemove={()=>removeTrade(i)}
+                canRemove={day.trades.length>1}
+                locked={locked}
+                studentName={studentName}
+                weekNum={weekNum}
+                dayIdx={dayIdx}/>
+            ))}
+          </tbody>
         </table>
       </div>
       {!locked&&(
@@ -166,9 +227,12 @@ function DayBlock({ dayIdx, day, onChange, weekConfig, locked }){
       )}
       {isFlat&&(
         <div style={{padding:"8px 16px",background:"#0f0f1c",borderTop:"1px solid #1e1e2e",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-          <span style={{fontSize:11,color:C.gold,fontWeight:700,whiteSpace:"nowrap"}}>📸 FLAT DAY — Screenshot Ref:</span>
-          <input type="text" placeholder="e.g. flat_monday.png" value={day.flatScreenshot||""} disabled={locked}
-            onChange={e=>onChange({...day,flatScreenshot:e.target.value})} style={{flex:1,minWidth:140,...IBASE,border:"1px solid #D4A01744"}}/>
+          <span style={{fontSize:11,color:C.gold,fontWeight:700,whiteSpace:"nowrap"}}>📸 FLAT DAY — Upload Screenshot:</span>
+          <PhotoUpload
+            url={day.flatScreenshotUrl}
+            onUpload={url=>onChange({...day, flatScreenshotUrl:url})}
+            path={`screenshots/${studentName}/week${weekNum}/day${dayIdx}/flat.jpg`}
+            locked={locked}/>
         </div>
       )}
       {hasTrades&&(
@@ -187,11 +251,11 @@ function DayBlock({ dayIdx, day, onChange, weekConfig, locked }){
             {lb:"TIME IN",el:<input type="text" placeholder="9:45 AM" value={day.spread.timeIn} disabled={locked} onChange={e=>updSpread("timeIn",e.target.value)} style={SINP}/>},
             {lb:"TIME OUT",el:<input type="text" placeholder="10:30 AM" value={day.spread.timeOut} disabled={locked} onChange={e=>updSpread("timeOut",e.target.value)} style={SINP}/>},
             {lb:"STRIKES",el:<input type="text" placeholder="445/450" value={day.spread.strikes} disabled={locked} onChange={e=>updSpread("strikes",e.target.value)} style={{...SINP,width:76}}/>},
-            {lb:"CREDIT RECV'D $",el:<input type="number" placeholder="0.00" value={day.spread.creditRecvd} disabled={locked} onChange={e=>updSpread("creditRecvd",e.target.value)} style={SINP}/>},
+            {lb:"CREDIT $",el:<input type="number" placeholder="0.00" value={day.spread.creditRecvd} disabled={locked} onChange={e=>updSpread("creditRecvd",e.target.value)} style={SINP}/>},
             {lb:"MAX RISK $",el:<input type="number" placeholder="0.00" value={day.spread.maxRisk} disabled={locked} onChange={e=>updSpread("maxRisk",e.target.value)} style={SINP}/>},
             {lb:"CONTRACTS",el:<input type="number" placeholder="0" value={day.spread.contracts} disabled={locked} onChange={e=>updSpread("contracts",e.target.value)} style={{...SINP,width:70}}/>},
             {lb:"OUTCOME $",el:<input type="number" placeholder="0.00" value={day.spread.outcome} disabled={locked} onChange={e=>updSpread("outcome",e.target.value)} style={{...SINP,borderColor:spreadOut>0?C.green:spreadOut<0?C.red:"#4a0e6a",color:spreadOut>0?C.green:spreadOut<0?C.red:"#e0e0e0"}}/>},
-            {lb:"NOTES / REF",el:<input type="text" placeholder="screenshot ref" value={day.spread.notes} disabled={locked} onChange={e=>updSpread("notes",e.target.value)} style={{...SINP,width:140}}/>},
+            {lb:"SCREENSHOT",el:<PhotoUpload url={day.spread.screenshotUrl} onUpload={url=>updSpread("screenshotUrl",url)} path={`screenshots/${studentName}/week${weekNum}/day${dayIdx}/spread.jpg`} locked={locked}/>},
           ].map(({lb,el})=>(
             <div key={lb} style={{display:"flex",flexDirection:"column",gap:3}}>
               <span style={{fontSize:9,color:C.purple,fontWeight:700,letterSpacing:1,whiteSpace:"nowrap"}}>{lb}</span>{el}
@@ -206,14 +270,14 @@ function RulesGuide(){
   const [open,setOpen]=useState(null);
   const sections=[
     {icon:"🎯",title:"Overall Goal",color:"#D4A017",lines:["Achieve $8,000 total profit over 3 weeks by scaling position size progressively.","Week 1 → 1 contract | Daily $100 | Weekly $500","Week 2 → 3 contracts | Daily $500 | Weekly $2,500 | Cumulative $3,000","Week 3 → 5 contracts | Daily $1,000 | Weekly $5,000 | Final Total $8,000"]},
-    {icon:"⚙️",title:"Required Trade Data",color:"#0D47A1",lines:["Log for every trade: Date, Entry Time, Call/Put, Contracts, Entry Price $, Exit Price $","Gross P&L auto-calculates: (Exit − Entry) × Contracts × 100","Rules Met? → Yes / Partial / No — be honest every time","Screenshot of order book → log the file name in the Screenshot column"]},
+    {icon:"⚙️",title:"Required Trade Data",color:"#0D47A1",lines:["Log for every trade: Date, Entry Time, Call/Put, Contracts, Entry Price $, Exit Price $","Gross P&L auto-calculates: (Exit − Entry) × Contracts × 100","Rules Met? → Yes / Partial / No — be honest every time","Tap 📷 Add Photo in the Screenshot column to upload your order book image directly"]},
+    {icon:"📸",title:"How to Upload Screenshots",color:"#1B5E20",lines:["Each trade row has a 📷 Add Photo button in the Screenshot column.","Tap it — your phone's camera roll or file picker will open.","Select your screenshot — it uploads instantly to secure cloud storage.","A thumbnail appears in the row confirming the upload.","FLAT DAY: If you made no trades, use the flat day screenshot button that appears at the bottom of the day.","Spread trades also have their own screenshot upload button."]},
     {icon:"📊",title:"Scaling Out of Positions",color:"#6A1E6A",lines:["Bought 5 contracts and want to exit 1 at a time? Use one trade row per exit.","Each row: same Entry Time & Entry Price, adjust Contracts to partial size, enter Exit Price for that tranche.","Example: Entry $2.00 × 5 contracts bought","  → Row 1: 2 contracts exited @ $2.50  =  +$100","  → Row 2: 2 contracts exited @ $2.80  =  +$160","  → Row 3: 1 contract exited @ $3.10   =  +$110","Hit '＋ Add Trade Row' at the bottom of any day to add as many rows as needed."]},
-    {icon:"📸",title:"Proof of Execution — Non-Negotiable",color:"#1B5E20",lines:["Screenshot your order book showing entry + exit for EVERY trade.","FLAT DAY RULE: No trades? You STILL must screenshot your order book and log it.","If it is not documented with a screenshot reference, it does not count."]},
     {icon:"🛑",title:"3-Loss Rule — Protect Your Drawdown",color:"#FF1744",lines:["If you take 3 losing trades in a single day, you are IMMEDIATELY done for the day.","The tracker flags this automatically when 3 rows show negative P&L.","DO NOT take a 4th trade trying to recover.","Close your platform. Review. Come back tomorrow."]},
-    {icon:"💳",title:"Credit Spreads — BCS / BPS",color:"#9C27B0",lines:["Deploy a BCS or BPS only when a clear, high-probability setup appears.","Log: Type, Time In, Time Out, Strikes, Credit Received $, Max Risk $, Contracts, Outcome $.","Spread Outcome $ is automatically added into your Daily Total P&L.","MAXIMUM risk capital: $5,000. Spread width: $5 wide. Max contracts: 10.","Do NOT force spreads — only deploy when ALL rules are met."]},
+    {icon:"💳",title:"Credit Spreads — BCS / BPS",color:"#9C27B0",lines:["Deploy a BCS or BPS only when a clear, high-probability setup appears.","Log: Type, Time In, Time Out, Strikes, Credit Received $, Max Risk $, Contracts, Outcome $.","Upload your spread screenshot using the 📷 button in the spread section.","Spread Outcome $ is automatically added into your Daily Total P&L.","MAXIMUM risk capital: $5,000. Spread width: $5 wide. Max contracts: 10."]},
     {icon:"⚖️",title:"Core Rules — Non-Negotiable",color:"#FFB300",lines:["1.  ONE TRADE MENTALITY — One clean setup per day is enough.","2.  NO FORCING TRADES — Nothing lines up? Stay flat. No setup = no trade.","3.  FOLLOW ALL CONFIRMATIONS — Trend + MAs + DMI + TTM must ALL align.","4.  TAKE PROFIT WHEN AVAILABLE — Don't get greedy. Base hits beat home runs.","5.  CUT LOSSES WHEN RULES BREAK — Momentum fades? Exit. No hoping.","6.  ADJUST FOR CONDITIONS — High volatility: size down. Chop: don't trade.","7.  STAY EMOTIONALLY NEUTRAL — No revenge trading. No overtrading."]},
-    {icon:"🚫",title:"Automatic Disqualifiers",color:"#FF1744",lines:["❌  Using more contracts than your assigned week allows","❌  Exceeding $5,000 max risk on any credit spread","❌  Missing documentation or screenshot for any trade","❌  Taking a 4th trade after 3 losses in one day","❌  Entering trades that do not meet all confirmations"]},
-    {icon:"🏁",title:"How to Pass the Challenge",color:"#00C853",lines:["✅  Hit $8,000 cumulative profit by end of Week 3","✅  Follow all rules consistently across all 3 weeks","✅  Screenshot proof for every trade — no exceptions","✅  Show discipline in execution — not just in results","","The goal is not just to pass the challenge.","The goal is to become the trader who can REPEAT it. 🔥"]},
+    {icon:"🚫",title:"Automatic Disqualifiers",color:"#FF1744",lines:["❌  Using more contracts than your assigned week allows","❌  Exceeding $5,000 max risk on any credit spread","❌  Missing screenshot proof for any trade","❌  Taking a 4th trade after 3 losses in one day","❌  Entering trades that do not meet all confirmations"]},
+    {icon:"🏁",title:"How to Pass the Challenge",color:"#00C853",lines:["✅  Hit $8,000 cumulative profit by end of Week 3","✅  Follow all rules consistently across all 3 weeks","✅  Upload screenshot proof for every trade — no exceptions","✅  Show discipline in execution — not just in results","","The goal is not just to pass the challenge.","The goal is to become the trader who can REPEAT it. 🔥"]},
   ];
   return (
     <div>
@@ -224,7 +288,7 @@ function RulesGuide(){
       <div style={{background:"#12121f",borderRadius:12,padding:16,marginBottom:20,border:"1px solid #1e1e2e"}}>
         <div style={{fontSize:10,fontWeight:700,color:"#444",letterSpacing:1,marginBottom:12}}>⚡ QUICK REFERENCE</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:8}}>
-          {[{t:"🧱 One clean trade per day is enough",c:"#666"},{t:"⛔ No setup = no trade — stay flat",c:"#666"},{t:"📸 Flat day still needs a screenshot",c:C.gold},{t:"🛑 3 losses = done trading for the day",c:C.red},{t:"📊 Scale out? Add a row per partial exit",c:C.purple},{t:"💰 Take profit when the market gives it",c:C.green},{t:"✂️ Cut losses the moment rules break",c:C.amber},{t:"💳 Max $5K risk on any credit spread",c:C.purple}].map(({t,c})=>(
+          {[{t:"🧱 One clean trade per day is enough",c:"#666"},{t:"⛔ No setup = no trade — stay flat",c:"#666"},{t:"📷 Tap Add Photo to upload screenshots",c:C.gold},{t:"🛑 3 losses = done trading for the day",c:C.red},{t:"📊 Scale out? Add a row per partial exit",c:C.purple},{t:"💰 Take profit when the market gives it",c:C.green},{t:"✂️ Cut losses the moment rules break",c:C.amber},{t:"💳 Max $5K risk on any credit spread",c:C.purple}].map(({t,c})=>(
             <div key={t} style={{background:"#0d0d1a",borderRadius:8,padding:"8px 12px",fontSize:12,color:c,fontWeight:600,borderLeft:`3px solid ${c}44`}}>{t}</div>
           ))}
         </div>
@@ -317,7 +381,7 @@ function StudentTracker({ name, data, onSave, isCoach }){
         </div>
         <div style={{marginBottom:20}}><ProgressBar value={wkTotal} max={wk.weeklyTarget} color={[C.week1,C.week2,C.week3][activeWeek]}/></div>
         {wkData.days.map((day,di)=>(
-          <DayBlock key={di} dayIdx={di} day={day} onChange={nd=>updateDay(activeWeek,di,nd)} weekConfig={wk} locked={false}/>
+          <DayBlock key={di} dayIdx={di} day={day} onChange={nd=>updateDay(activeWeek,di,nd)} weekConfig={wk} locked={false} studentName={name} weekNum={activeWeek+1}/>
         ))}
       </>}
     </div>
